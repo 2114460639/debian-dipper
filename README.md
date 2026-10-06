@@ -37,7 +37,7 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 | Swap 内存交换 zram             |  Y  | `/dev/zram0` **4 GiB** zstd，priority 100                                                                                                                                                                                                                                                                                          |
 | Power 电源守护（低电量安全关机 / 充电限流） |  Y  | **本次**新增 `polaris-power-guard.service`：低电量时主动干净关机（避免 UFS 非正常断电），插电时把 `pmi8998-charger` 的输入限流从驱动默认 **500 mA** 抬到 1.5 A；阈值见 `/etc/default/polaris-power-guard`                                                                                                                                          |
 | USB Net USB 网络             |  Y  | `usb0` UP，设备侧 172.16.42.1                                                                                                                                                                                                                                                                                                       |
-| USB OTG USB 主机 / Type-C PD |  N  | **本次**更正：内核与设备树其实**已就位**（`dr_mode="otg"` + `usb-role-switch`、PMI8998 PD PHY 与 VBUS regulator 均已编入，`/sys/class/typec/port0` 在线、`power_operation_mode=3.0A`，`usb_role` 当前为 device）；只是尚未插 OTG 外设实测 host 侧                                                                                                                                                   |
+| USB OTG USB 主机 / Type-C PD |  Y  | **本次**实测通过：插 OTG 转接即由 tcpm 自动切 host（无需手写 role），`xhci-hcd` 枚举出 U 盘并正常挂载读写（读 26.3 MB/s、写 21.4 MB/s，3.4 GB `squashfs` 的 md5 与盘上 `md5sum.txt` 逐位一致）；插 PD 充电器协商出 **PD 3.0 / PPS 9V 2A（18 W）**，`port0` 转 `[sink]`、电池实际充入约 636 mA。仅验到 USB 2.0 High Speed，PD 未测 20V 档                                                                                                                                                   |
 | ADB 直连                     |  Y  | `polaris-adbd.service` 运行中，`adb devices` 显示 `dipper`                                                                                                                                                                                                                                                                             |
 | Keyboard 虚拟键盘              |  Y  | `fbkeyboard.service` 运行中                                                                                                                                                                                                                                                                                                         |
 | Keys 电源 / 音量键              |  P  | `polaris-keys.service` 运行中，但 dipper 的按键映射未逐一验证                                                                                                                                                                                                                                                                                  |
@@ -357,12 +357,17 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
   cmdline 的 `fsck.repair=yes` 会开机自动 `fsck -y` 修复；仍失败则按「刷机步骤」重刷（先 `erase userdata`）。
 - **蓝牙已实测可用**：本机（dipper）蓝牙正常（`hciconfig -a` UP RUNNING、
   `bluetooth.service` 运行中）。请**不要**照抄 polaris 老笔记里「SOC 蓝牙不可用」的旧结论。
+- **USB OTG / Type-C PD 已实测可用**（本轮验证，`r79` 内核 + `#80`）：
+  插 OTG 转接后 `tcpm` 自动把 `a600000.usb-role-switch` 切到 `host`（无需手工写 role），
+  `xhci-hcd` 枚举出 USB 存储设备并成功挂载读写 —— 读 26.3 MB/s、写 21.4 MB/s，
+  且 3.4 GB 的 `live/filesystem.squashfs` 读出 md5 与盘上官方 `md5sum.txt` 逐位一致；
+  插 PD 充电器后 `port0` 转 `[sink]`、`power_operation_mode=usb_power_delivery`，
+  协商出 **PD 3.0 / PPS 9 V 2 A（18 W）**（对端能力 5–20 V、最高 3 A），
+  `pmi8998-charger` `online=1`、`status=Charging`，电池净充入约 636 mA。
+  注意：只验证到 **USB 2.0 High Speed**（手头 U 盘是 USB2 设备），
+  `usb2` 的 SuperSpeed 总线未插 USB3 外设验证；PD 也只跑到了 9 V 档。
 - **本次未验证 / 待做的功能**（均**非**"可用"，请勿引用为已验证）：
   - 4G / 移动数据（N）：MPSS 未起，`mmcli` 找不到 modem，待做。
-  - USB OTG / Type-C PD（N）：**不是"没做"而是"没插线测"**——内核与设备树已就位
-    （`dr_mode="otg"` + `usb-role-switch`，PMI8998 PD PHY / VBUS regulator 补丁都在 APKBUILD 里，
-    `/sys/class/typec/port0` 在线、`power_operation_mode=3.0A`）。目前只确认了 device 侧
-    （`usb_role` = device、ADB 可用），host 侧（接 U 盘 / 键盘）未实测。
   - GPU / 3D（N）：无 DRM 设备，未加载 freedreno/turnip；Mesa/Vulkan 包沿用 polaris，未验证。
   - 面板 / 背光驱动：无 DSI/DRM 面板驱动（EA8074 面板驱动待做），
     `/sys/class/backlight` 为空、无背光控制。
