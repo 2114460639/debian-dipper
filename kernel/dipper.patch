@@ -1,0 +1,928 @@
+Add mainline support for Xiaomi Mi 8 (dipper) - Qualcomm SDM845.
+
+Imported from the upstream submission by David Heidelberg:
+
+  [PATCH v2 0/2] Introduce support for Xiaomi Mi 8
+
+plus the xbl_mem extension (2 MiB @ 0x85d00000) that Pie-era Xiaomi
+firmware requires:
+
+  [PATCH 0/2] arm64: dts: qcom: sdm845-xiaomi: Recent firmware needs bigger XBL
+
+Only the DTS part is imported; the dt-bindings (qcom.yaml) hunk of the
+original series is not needed for the build.
+
+Local change (this tree): the upstream revision wires Wi-Fi and Bluetooth
+supplies to the internal regulators of a "qcom,wcn3990-pmu" power
+sequencer node.  CONFIG_POWER_SEQUENCING_QCOM_WCN in this kernel only
+implements the sequencer itself and does not register the node's
+"regulators" subnode, so vreg_pmu_* never materialise: ath10k_snoc and
+btqca end up with dummy supplies, the sequencer is never triggered and no
+wlan0 appears (plus a harmless "qcom-spmi-gpio ... write 0x40 failed" /
+pinctrl -EPERM from the now-removed sw_ctrl state).  The wcn3990-pmu node
+and sw_ctrl pinctrl state are therefore dropped and &wifi / bluetooth are
+fed straight from the PM8998 rails, exactly as beryllium and polaris do.
+
+Local change (this tree): the upstream &sound audio-routing was copied from
+beryllium and points "AMIC3" at "MIC BIAS3".  On dipper the built-in mic
+capsule is fed from the MIC BIAS1 net instead (as the vendor
+dipper-audio-overlay.dtsi also has it), so BIAS3 leaves the capsule unbiased:
+the capture path works but is ~35 dB down, which buries speech in noise.
+AMIC3 is therefore routed to MIC BIAS1.  (BIAS3 measured ~2 dB of the level,
+i.e. negligible, and is dropped entirely.)
+
+diff -Naur a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -323,6 +323,7 @@
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm845-xiaomi-beryllium-tianma.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm845-xiaomi-perseus.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm845-xiaomi-polaris.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sdm845-xiaomi-dipper.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm845-shift-axolotl.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm850-huawei-matebook-e-2019.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sdm850-lenovo-yoga-c630.dtb
+diff -Naur a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper-common.dtsi b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper-common.dtsi
+--- a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper-common.dtsi	1970-01-01 08:00:00.000000000 +0800
++++ b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper-common.dtsi	2026-10-06 20:48:01.122611787 +0800
+@@ -0,0 +1,840 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Xiaomi Mi 8 family common device tree source.
++ * Covers Mi 8 Explorer Edition (equuleus), Mi 8 (dipper), Mi 8 Pro (urza).
++ *
++ * Copyright David Heidelberg.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/arm/qcom,ids.h>
++#include <dt-bindings/firmware/qcom,scm.h>
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/linux-event-codes.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/phy/phy-qcom-qusb2.h>
++#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
++#include <dt-bindings/sound/qcom,q6afe.h>
++#include <dt-bindings/sound/qcom,q6asm.h>
++#include <dt-bindings/usb/pd.h>
++#include "sdm845.dtsi"
++#include "pm8998.dtsi"
++#include "pmi8998.dtsi"
++#include "sdm845-wcd9340.dtsi"
++
++/delete-node/ &adsp_mem;
++/delete-node/ &cdsp_mem;
++/delete-node/ &mba_region;
++/delete-node/ &mpss_region;
++/delete-node/ &rmtfs_mem;
++/delete-node/ &slpi_mem;
++/delete-node/ &spss_mem;
++/delete-node/ &tz_mem;
++/delete-node/ &venus_mem;
++/delete-node/ &wlan_msa_mem;
++/delete-node/ &xbl_mem;
++
++/ {
++	chassis-type = "handset";
++
++	qcom,msm-id = <QCOM_ID_SDM845 0x20001>;
++
++	aliases {
++		serial0 = &uart9;
++		serial1 = &uart6;
++	};
++
++	chosen {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		framebuffer {
++			compatible = "simple-framebuffer";
++			memory-region = <&cont_splash_mem>;
++
++			vci-supply = <&vreg_panel_vci>;
++			vddio-supply = <&vreg_panel_vddio>;
++
++			width = <1080>;
++			height = <2248>;
++			stride = <(1080 * 4)>;
++			format = "a8r8g8b8";
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++		autorepeat;
++
++		pinctrl-0 = <&volume_up_gpio>;
++		pinctrl-names = "default";
++
++		key-volume-up {
++			label = "Volume Up";
++			linux,code = <KEY_VOLUMEUP>;
++			gpios = <&pm8998_gpios 6 GPIO_ACTIVE_LOW>;
++			wakeup-source;
++			debounce-interval = <15>;
++		};
++	};
++
++	vreg_panel_vci: regulator-panel-vci {
++		compatible = "regulator-fixed";
++		regulator-name = "panel_vci_vreg";
++
++		regulator-min-microvolt = <3000000>;
++		regulator-max-microvolt = <3000000>;
++
++		gpio = <&tlmm 35 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <4000>;
++		regulator-boot-on;
++	};
++
++	vreg_panel_vddio: regulator-panel-vddio {
++		compatible = "regulator-fixed";
++		regulator-name = "panel_vddio_vreg";
++
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++
++		gpio = <&tlmm 23 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <4000>;
++		regulator-boot-on;
++	};
++
++	vph_pwr: regulator-vph-pwr {
++		compatible = "regulator-fixed";
++		regulator-name = "vph_pwr";
++
++		regulator-min-microvolt = <3700000>;
++		regulator-max-microvolt = <3700000>;
++	};
++
++	vreg_s4a_1p8: regulator-vreg-s4a-1p8 {
++		compatible = "regulator-fixed";
++		regulator-name = "vreg_s4a_1p8";
++
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		regulator-always-on;
++		regulator-boot-on;
++
++		vin-supply = <&vph_pwr>;
++	};
++
++	reserved-memory {
++		xbl-mem@85d00000 {
++			reg = <0 0x85d00000 0 0x200000>;
++			no-map;
++		};
++
++		/*
++		 * It seems like reserving the old rmtfs_mem region is
++		 * also needed to prevent random crashes
++		 */
++		old-rmtfs@88f00000 {
++			reg = <0 0x88f00000 0 0x200000>;
++			no-map;
++		};
++
++		adsp_mem: adsp@8c500000 {
++			reg = <0 0x8c500000 0 0x1e00000>;
++			no-map;
++		};
++
++		wlan_msa_mem: wlan-msa@8e300000 {
++			reg = <0 0x8e300000 0 0x100000>;
++			no-map;
++		};
++
++		mpss_region: mpss@8e400000 {
++			reg = <0 0x8e400000 0 0x7800000>;
++			no-map;
++		};
++
++		venus_mem: venus@95c00000 {
++			reg = <0 0x95c00000 0 0x500000>;
++			no-map;
++		};
++
++		cdsp_mem: cdsp@96100000 {
++			reg = <0 0x96100000 0 0x800000>;
++			no-map;
++		};
++
++		mba_region: mba@96900000 {
++			reg = <0 0x96900000 0 0x200000>;
++			no-map;
++		};
++
++		slpi_mem: slpi@96b00000 {
++			reg = <0 0x96b00000 0 0x1400000>;
++			no-map;
++		};
++
++		spss_mem: spss@97f00000 {
++			reg = <0 0x97f00000 0 0x100000>;
++			no-map;
++		};
++
++		cont_splash_mem: splash@9d400000 {
++			reg = <0 0x9d400000 0 0x950000>;
++			no-map;
++		};
++
++		ramoops@b0000000 {
++			compatible = "ramoops";
++			reg = <0 0xb0000000 0 0x00400000>;
++			record-size = <0x40000>;
++			console-size = <0x40000>;
++			ftrace-size = <0x40000>;
++			pmsg-size = <0x200000>;
++		};
++
++		rmtfs_mem: memory@f7300000 {
++			compatible = "qcom,rmtfs-mem";
++			reg = <0 0xf7300000 0 0x202000>;
++			qcom,use-guard-pages;
++			no-map;
++
++			qcom,client-id = <1>;
++			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
++		};
++	};
++};
++
++&apps_rsc {
++	regulators-0 {
++		compatible = "qcom,pm8998-rpmh-regulators";
++		qcom,pmic-id = "a";
++
++		vdd-s1-supply = <&vph_pwr>;
++		vdd-s2-supply = <&vph_pwr>;
++		vdd-s3-supply = <&vph_pwr>;
++		vdd-s4-supply = <&vph_pwr>;
++		vdd-s5-supply = <&vph_pwr>;
++		vdd-s6-supply = <&vph_pwr>;
++		vdd-s7-supply = <&vph_pwr>;
++		vdd-s8-supply = <&vph_pwr>;
++		vdd-s9-supply = <&vph_pwr>;
++		vdd-s10-supply = <&vph_pwr>;
++		vdd-s11-supply = <&vph_pwr>;
++		vdd-s12-supply = <&vph_pwr>;
++		vdd-s13-supply = <&vph_pwr>;
++		vdd-l1-l27-supply = <&vreg_s7a_1p025>;
++		vdd-l2-l8-l17-supply = <&vreg_s3a_1p35>;
++		vdd-l3-l11-supply = <&vreg_s7a_1p025>;
++		vdd-l4-l5-supply = <&vreg_s7a_1p025>;
++		vdd-l6-supply = <&vph_pwr>;
++		vdd-l7-l12-l14-l15-supply = <&vreg_s5a_2p04>;
++		vdd-l9-supply = <&vreg_bob>;
++		vdd-l10-l23-l25-supply = <&vreg_bob>;
++		vdd-l13-l19-l21-supply = <&vreg_bob>;
++		vdd-l16-l28-supply = <&vreg_bob>;
++		vdd-l18-l22-supply = <&vreg_bob>;
++		vdd-l20-l24-supply = <&vreg_bob>;
++		vdd-l26-supply = <&vreg_s3a_1p35>;
++		vin-lvs-1-2-supply = <&vreg_s4a_1p8>;
++
++		vreg_s2a_1p125: smps2 {
++			regulator-min-microvolt = <1100000>;
++			regulator-max-microvolt = <1100000>;
++		};
++
++		vreg_s3a_1p35: smps3 {
++			regulator-min-microvolt = <1352000>;
++			regulator-max-microvolt = <1352000>;
++		};
++
++		vreg_s5a_2p04: smps5 {
++			regulator-min-microvolt = <1904000>;
++			regulator-max-microvolt = <2040000>;
++		};
++
++		vreg_s7a_1p025: smps7 {
++			regulator-min-microvolt = <900000>;
++			regulator-max-microvolt = <1028000>;
++		};
++
++		vreg_l1a_0p875: ldo1 {
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <880000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2a_1p2: ldo2 {
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-always-on;
++		};
++
++		vreg_l5a_0p8: ldo5 {
++			regulator-min-microvolt = <800000>;
++			regulator-max-microvolt = <800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l7a_1p8: ldo7 {
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l12a_1p8: ldo12 {
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l14a_1p8: ldo14 {
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-boot-on;
++			regulator-always-on;
++		};
++
++		vreg_l17a_1p3: ldo17 {
++			regulator-min-microvolt = <1304000>;
++			regulator-max-microvolt = <1304000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l20a_2p95: ldo20 {
++			regulator-min-microvolt = <2950000>;
++			regulator-max-microvolt = <2960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l22a_2p864: ldo22 {
++			regulator-min-microvolt = <2864000>;
++			regulator-max-microvolt = <2864000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l23a_3p3: ldo23 {
++			regulator-min-microvolt = <3000000>;
++			regulator-max-microvolt = <3312000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l24a_3p075: ldo24 {
++			regulator-min-microvolt = <3088000>;
++			regulator-max-microvolt = <3088000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l25a_3p3: ldo25 {
++			regulator-min-microvolt = <3300000>;
++			regulator-max-microvolt = <3312000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l26a_1p2: ldo26 {
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++			regulator-boot-on;
++		};
++
++		vreg_l28a_3p3: ldo28 {
++			regulator-min-microvolt = <2856000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_lvs1_1p8: lvs1 {
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++		};
++	};
++
++	regulators-1 {
++		compatible = "qcom,pmi8998-rpmh-regulators";
++		qcom,pmic-id = "b";
++
++		vdd-bob-supply = <&vph_pwr>;
++
++		vreg_bob: bob {
++			regulator-min-microvolt = <3312000>;
++			regulator-max-microvolt = <3600000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
++			regulator-allow-bypass;
++		};
++	};
++};
++
++&dispcc {
++	/* Disable for now so simple-framebuffer continues working */
++	status = "disabled";
++};
++
++&gcc {
++	protected-clocks = <GCC_QSPI_CORE_CLK>,
++			   <GCC_QSPI_CORE_CLK_SRC>,
++			   <GCC_QSPI_CNOC_PERIPH_AHB_CLK>,
++			   <GCC_LPASS_Q6_AXI_CLK>,
++			   <GCC_LPASS_SWAY_CLK>;
++};
++
++&gpi_dma0 {
++	status = "okay";
++};
++
++&gpi_dma1 {
++	status = "okay";
++};
++
++&gpu {
++	status = "okay";
++};
++
++&gpu_zap_shader {
++	firmware-name = "qcom/sdm845/Xiaomi/dipper/a630_zap.mbn";
++};
++
++&ibb {
++	regulator-min-microvolt = <4600000>;
++	regulator-max-microvolt = <6000000>;
++	regulator-over-current-protection;
++	regulator-pull-down;
++	regulator-soft-start;
++};
++
++&ipa {
++	/*
++	 * NOTE: IPA stays probe-less on dipper: adding
++	 * memory-region = <&ipa_fw_mem> makes IPA bring up GSI and the
++	 * system watchdog-reboots a few seconds into multi-user, right
++	 * when the modem services start.  Without it IPA fails with
++	 * -19 and no rmnet_ipa netdev exists, so ModemManager refuses
++	 * to create the modem ("Failed to find a net port in the QMI
++	 * modem") and 4G stays unavailable.
++	 */
++	firmware-name = "qcom/sdm845/Xiaomi/dipper/ipa_fws.mbn";
++
++	status = "okay";
++};
++
++&lab {
++	regulator-min-microvolt = <4600000>;
++	regulator-max-microvolt = <6000000>;
++	regulator-pull-down;
++	regulator-soft-start;
++};
++
++&mdss {
++	/* Disable for now so simple-framebuffer continues working */
++	status = "disabled";
++};
++
++&mss_pil {
++	firmware-name = "qcom/sdm845/Xiaomi/dipper/mba.mbn",
++			"qcom/sdm845/Xiaomi/dipper/modem.mbn";
++
++	status = "okay";
++};
++
++&pmi8998_charger {
++	monitored-battery = <&battery>;
++
++	status = "okay";
++};
++
++&pmi8998_fg {
++	power-supplies = <&pmi8998_charger>;
++	monitored-battery = <&battery>;
++
++	status = "okay";
++};
++
++&pm8998_gpios {
++	volume_up_gpio: vol-up-active-state {
++		pins = "gpio6";
++		function = "normal";
++		input-enable;
++		bias-pull-up;
++		power-source = <0>;
++	};
++};
++
++&pm8998_resin {
++	linux,code = <KEY_VOLUMEDOWN>;
++
++	status = "okay";
++};
++
++&qupv3_id_0 {
++	status = "okay";
++};
++
++&qupv3_id_1 {
++	status = "okay";
++};
++
++&qup_uart9_rx {
++	drive-strength = <2>;
++	bias-pull-up;
++};
++
++&qup_uart9_tx {
++	drive-strength = <2>;
++	bias-disable;
++};
++
++&i2c5 {
++	status = "okay";
++
++	/* TAS2557 smart speaker amplifier */
++	tas2557_codec: tas2557@4c {
++		compatible = "ti,tas2557";
++		reg = <0x4c>;
++
++		#sound-dai-cells = <1>;
++
++		ti,cdc-reset-gpio = <&tlmm 76 0>;
++		ti,bypass-tmax = <0>;
++	};
++};
++
++&i2c14 {
++	clock-frequency = <400000>;
++
++	status = "okay";
++
++	touchscreen@49 {
++		compatible = "st,stmfts5";
++		reg = <0x49>;
++
++		interrupts-extended = <&tlmm 31 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 32 GPIO_ACTIVE_LOW>;
++
++		pinctrl-names = "default", "sleep";
++		pinctrl-0 = <&ts_int_default &ts_reset_default>;
++		pinctrl-1 = <&ts_int_sleep &ts_reset_sleep>;
++
++		vdd-supply = <&vreg_panel_vddio>;
++		avdd-supply = <&vreg_l28a_3p3>;
++
++		touchscreen-size-x = <1079>;
++		touchscreen-size-y = <2247>;
++	};
++};
++
++&tlmm {
++	gpio-reserved-ranges = < 0 4>, /* SPI (Goodix Fingerprint) */
++			       <81 4>; /* SPI (Synaptics Fingerprint) */
++
++	ts_int_default: ts-int-default-state {
++		pins = "gpio31";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-pull-up;
++		input-enable;
++	};
++
++	ts_int_sleep: ts-int-sleep-state {
++		pins = "gpio31";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		input-enable;
++	};
++
++	ts_reset_default: ts-reset-default-state {
++		pins = "gpio32";
++		function = "gpio";
++		drive-strength = <16>;
++		output-high;
++	};
++
++	ts_reset_sleep: ts-reset-sleep-state {
++		pins = "gpio32";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-low;
++	};
++};
++
++&ufs_mem_hc {
++	reset-gpios = <&tlmm 150 GPIO_ACTIVE_LOW>;
++
++	vcc-supply = <&vreg_l20a_2p95>;
++	vcc-max-microamp = <600000>;
++	vccq2-supply = <&vreg_s4a_1p8>;
++	vccq2-max-microamp = <600000>;
++
++	status = "okay";
++
++};
++
++&ufs_mem_phy {
++	vdda-phy-supply = <&vreg_l1a_0p875>;
++	vdda-pll-supply = <&vreg_l26a_1p2>;
++
++	status = "okay";
++};
++
++&usb_1 {
++	qcom,select-utmi-as-pipe-clk;
++
++	status = "okay";
++};
++
++&usb_1_dwc3 {
++	dr_mode = "otg";
++	usb-role-switch;
++
++	maximum-speed = "high-speed";
++	phys = <&usb_1_hsphy>;
++	phy-names = "usb2-phy";
++};
++
++&usb_1_dwc3_hs {
++	remote-endpoint = <&pmi8998_hs_in>;
++};
++
++&pmi8998_typec {
++	status = "okay";
++
++	vdd-pdphy-supply = <&vreg_l24a_3p075>;
++
++	connector {
++		compatible = "usb-c-connector";
++
++		op-sink-microwatt = <18000000>;
++
++		power-role = "dual";
++		data-role = "dual";
++		self-powered;
++
++		typec-power-opmode = "default";
++
++		source-pdos = <PDO_FIXED(5000, 3000,
++					 PDO_FIXED_DUAL_ROLE |
++					 PDO_FIXED_USB_COMM |
++					 PDO_FIXED_DATA_SWAP)>;
++
++		sink-pdos = <PDO_FIXED(5000, 3000,
++				       PDO_FIXED_DUAL_ROLE |
++				       PDO_FIXED_USB_COMM |
++				       PDO_FIXED_DATA_SWAP)
++			     PDO_FIXED(9000, 2000,
++				       PDO_FIXED_DUAL_ROLE |
++				       PDO_FIXED_USB_COMM |
++				       PDO_FIXED_DATA_SWAP)>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++
++				pmi8998_hs_in: endpoint {
++					remote-endpoint = <&usb_1_dwc3_hs>;
++				};
++			};
++		};
++	};
++};
++
++&pmi8998_vbus {
++	regulator-min-microamp = <500000>;
++	regulator-max-microamp = <3000000>;
++
++	status = "okay";
++};
++
++&usb_1_hsphy {
++	vdd-supply = <&vreg_l1a_0p875>;
++	vdda-pll-supply = <&vreg_l12a_1p8>;
++	vdda-phy-dpdm-supply = <&vreg_l24a_3p075>;
++
++	qcom,imp-res-offset-value = <8>;
++	qcom,hstx-trim-value = <QUSB2_V2_HSTX_TRIM_21_6_MA>;
++	qcom,preemphasis-level = <QUSB2_V2_PREEMPHASIS_5_PERCENT>;
++	qcom,preemphasis-width = <QUSB2_V2_PREEMPHASIS_WIDTH_HALF_BIT>;
++
++	status = "okay";
++};
++
++&uart6 {
++	pinctrl-0 = <&qup_uart6_4pin>;
++
++	status = "okay";
++
++	bluetooth {
++		compatible = "qcom,wcn3990-bt";
++
++		firmware-name = "Xiaomi/dipper/crnv21.bin";
++
++		vddio-supply = <&vreg_s4a_1p8>;
++		vddxo-supply = <&vreg_l7a_1p8>;
++		vddrf-supply = <&vreg_l17a_1p3>;
++		vddch0-supply = <&vreg_l25a_3p3>;
++
++		max-speed = <3200000>;
++	};
++};
++
++&uart9 {
++	status = "okay";
++};
++
++&wifi {
++	vdd-0.8-cx-mx-supply = <&vreg_l5a_0p8>;
++	vdd-1.8-xo-supply = <&vreg_l7a_1p8>;
++	vdd-1.3-rfa-supply = <&vreg_l17a_1p3>;
++	vdd-3.3-ch0-supply = <&vreg_l25a_3p3>;
++	vdd-3.3-ch1-supply = <&vreg_l23a_3p3>;
++
++	qcom,snoc-host-cap-skip-quirk;
++
++	status = "okay";
++};
++
++&sound {
++	compatible = "qcom,db845c-sndcard", "qcom,sdm845-sndcard";
++	pinctrl-0 = <&quat_mi2s_active
++			&quat_mi2s_sd0_active>;
++	pinctrl-names = "default";
++	model = "Xiaomi Mi 8";
++	audio-routing =
++		"RX_BIAS", "MCLK",
++		"AMIC1", "MIC BIAS1",
++		"AMIC2", "MIC BIAS2",
++		"AMIC3", "MIC BIAS1";
++
++	mm1-dai-link {
++		link-name = "MultiMedia1";
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
++		};
++	};
++
++	mm2-dai-link {
++		link-name = "MultiMedia2";
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
++		};
++	};
++
++	mm3-dai-link {
++		link-name = "MultiMedia3";
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA3>;
++		};
++	};
++
++	mm4-dai-link {
++		link-name = "MultiMedia4";
++		cpu {
++			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA4>;
++		};
++	};
++
++	tas2557-dai-link {
++		link-name = "Primary Spkr Playback";
++		cpu {
++			sound-dai = <&q6afedai QUATERNARY_MI2S_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&tas2557_codec 0>;
++		};
++	};
++
++	slim-dai-link {
++		link-name = "SLIM Playback";
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_0_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&wcd9340 0>;
++		};
++	};
++
++	slimcap-dai-link {
++		link-name = "SLIM WCD Capture";
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_0_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&wcd9340 1>; /* AIF1_CAP */
++		};
++	};
++
++	slimcap2-dai-link {
++		link-name = "SLIM WCD Capture 2";
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_1_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&wcd9340 3>; /* AIF2_CAP */
++		};
++	};
++};
++
++&q6afedai {
++	dai@22 {
++		reg = <QUATERNARY_MI2S_RX>;
++		qcom,sd-lines = <0>;
++	};
++};
++
++&q6asmdai {
++	dai@0 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
++	};
++
++	dai@1 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
++	};
++
++	dai@2 {
++		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
++	};
++
++	dai@3 {
++		reg = <3>;
++	};
++};
++
++&wcd9340 {
++	reset-gpios = <&tlmm 64 GPIO_ACTIVE_HIGH>;
++	vdd-buck-supply = <&vreg_s4a_1p8>;
++	vdd-buck-sido-supply = <&vreg_s4a_1p8>;
++	vdd-tx-supply = <&vreg_s4a_1p8>;
++	vdd-rx-supply = <&vreg_s4a_1p8>;
++	vdd-io-supply = <&vreg_s4a_1p8>;
++	qcom,micbias1-microvolt = <2700000>;
++	qcom,micbias2-microvolt = <1800000>;
++	qcom,micbias3-microvolt = <2700000>;
++	qcom,micbias4-microvolt = <2700000>;
++};
+diff -Naur a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper.dts b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper.dts	1970-01-01 08:00:00.000000000 +0800
++++ b/arch/arm64/boot/dts/qcom/sdm845-xiaomi-dipper.dts	2026-10-06 20:36:53.638615683 +0800
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Xiaomi Mi 8 (dipper).
++ *
++ * Copyright David Heidelberg.
++ */
++
++/dts-v1/;
++
++#include "sdm845-xiaomi-dipper-common.dtsi"
++
++/ {
++	model = "Xiaomi Mi 8";
++	compatible = "xiaomi,dipper", "xiaomi,dipper-common", "qcom,sdm845";
++
++	qcom,board-id = <55 0>;
++
++	battery: battery {
++		compatible = "simple-battery";
++
++		charge-full-design-microamp-hours = <3400000>;
++		voltage-min-design-microvolt = <3400000>;
++		voltage-max-design-microvolt = <4400000>;
++	};
++
++};
++
++&adsp_pas {
++	firmware-name = "qcom/sdm845/Xiaomi/dipper/adsp.mbn";
++
++	status = "okay";
++};
++
++&wifi {
++	qcom,calibration-variant = "Xiaomi_dipper";
++};

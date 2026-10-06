@@ -1,0 +1,44 @@
+小米 8（dipper）触摸：修正 FTS5 开感应序列，消除冷启动中断风暴
+
+stmfts 驱动的 FTS5 分支在 input_open 时直接把扫描模式的 settings 写成 0xff，
+即要求打开全部扫描特性（key/hover/proximity/force 以及若干未定义位），本机
+面板并不支持这些特性；而且单纯"置位"扫描掩码并不能让控制器的扫描引擎重新
+起步。
+
+实测（本机 ST FTS V521）：只要控制器在本次上电后收到过一次"扫描模式置位"
+（无论 0xff 还是原厂的 0x01），它就会卡在一种坏状态里——用 0x86 读 256 字节
+的事件栈恒为全 0，但电平触发的中断线一直保持有效，于是线程化的 IRQ handler
+以约 70 次/秒空转（stmfts_irq 持续增长、FIFO 全 0、CPU 空耗），且不会自行
+恢复。只有先发一次"扫描关闭" {a0,00,00} 才能立即且永久地止住该风暴。
+
+因此这里对齐原厂 fts_521 的 senseOff()/senseOn() 成对调用：先 {a0,00,00} 关
+扫描、按 WAIT_AFTER_SENSEOFF(50ms) 等待扫描引擎真正停下，再用 0x01 只开
+ACTIVE_MULTI_TOUCH（bit0：MS/SS 扫描）重新起步。
+
+--- a/drivers/input/touchscreen/stmfts.c
++++ b/drivers/input/touchscreen/stmfts.c
+@@ -635,7 +635,23 @@
+ 	sdata->running = true;
+ 	mutex_unlock(&sdata->mutex);
+ 
+-	err = stmfts5_set_scan_mode(sdata, 0xff);
++	/*
++	 * Quiesce the scan engine first and only then re-arm it with
++	 * ACTIVE_MULTI_TOUCH.  Writing the scan mask alone (0xff or 0x01)
++	 * leaves the controller asserting the level-triggered interrupt line
++	 * with an empty event FIFO, i.e. a permanent ~70/s interrupt storm;
++	 * an explicit scan-off clears that state.  This mirrors the vendor
++	 * driver's senseOff()/senseOn() pair (delay = WAIT_AFTER_SENSEOFF).
++	 */
++	err = stmfts5_set_scan_mode(sdata, 0x00);
++	if (err) {
++		pm_runtime_put_sync(&sdata->client->dev);
++		return err;
++	}
++
++	msleep(50);
++
++	err = stmfts5_set_scan_mode(sdata, 0x01);
+ 	if (err) {
+ 		pm_runtime_put_sync(&sdata->client->dev);
+ 		return err;
