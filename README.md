@@ -4,7 +4,9 @@
 Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkeyboard），触摸即可打字。
 
 本版本定位为**追求稳定的英文控制台系统**：界面语言英文 `en_US.UTF-8`，**无任何图形界面**
-（不含 phosh / phoc / greetd / display-manager），**内核与设备树层面未包含摄像头**，
+（不含 phosh / phoc / greetd / display-manager），**内核与设备树层面未包含摄像头**
+（本版本按设计不含摄像头驱动；若日后需要，可参考
+<https://github.com/2114460639/pmos-polaris-fixes> 里 polaris 的启用方式），
 并把设备适配（网络、音频、ADB、固件等）固化进镜像，开机即用，无需首启配置。
 
 本镜像的根文件系统基于 polaris（小米 MIX 2S）rootfs 构建，再叠加 **dipper 专属覆盖层**
@@ -14,9 +16,10 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 
 - 发行版：Debian GNU/Linux 13 (trixie)，aarch64
 - 设备：小米 8（dipper，Qualcomm SDM845，内存约 5.5 GiB 可见）
-- 内核：postmarketOS 的 `linux-postmarketos-qcom-sdm845` **7.1\_rc1-r79**
-  （版本串 `7.1.0-rc1-sdm845`，`#80`）；在上游基础上打了 dipper 设备树与触控两处补丁
-  （`dipper.patch`、`dipper-stmfts5-scan-mode.patch`），见 [kernel/README.md](kernel/README.md)
+- 内核：postmarketOS 的 `linux-postmarketos-qcom-sdm845` **7.1\_rc1-r83**
+  （版本串 `7.1.0-rc1-sdm845`，`#84`）；在上游基础上打了 dipper 设备树、触控与面板三处补丁
+  （`dipper.patch`、`dipper-stmfts5-scan-mode.patch`、`dipper-panel.patch`），
+  见 [kernel/README.md](kernel/README.md)
 - 构建方式：**官方 Debian 源 + debootstrap**（非 Mobian），第三方预编译件仅为
   pmOS 内核/固件、静态 adbd、fbkeyboard 与 `polaris-keys`
 
@@ -28,11 +31,11 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 
 | 功能                         |  状态 | 注释                                                                                                                                                                                                                                                                                                                              |
 | -------------------------- | :-: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Screen 屏幕 / Touch 触控       |  P  | simple-framebuffer 1080x2248（cont_splash）直出 fbcon，无 DSI/DRM 面板驱动（EA8074 面板驱动待做），`/sys/class/backlight` 为空、无背光控制；触控 `stmfts`（i2c-14 0x49）正常注册，仅用于下半屏 fbkeyboard 虚拟键盘                                                                                                                                                                     |
-| 3D GPU                     |  N  | 无 DRM 设备（`/sys/class/drm` 只有 `version`），未加载 freedreno/turnip；**本次**沿用 polaris 的 Mesa/Vulkan 包但未验证                                                                                                                                                                                                                                     |
-| Wifi Wi‑Fi                 |  Y  | `wlan0` UP（WCN3990 / ath10k_snoc）                                                                                                                                                                                                                                                                                                 |
+| Screen 屏幕 / Touch 触控       |  Y  | **本次**新增 `samsung,ea8074` DSI 面板驱动（DRM + 背光），修复 `panel_vci_vreg`（3.0 V / tlmm35）未上电导致 DRM 接管后全黑的问题；`/sys/class/backlight/ae94000.dsi.0` 可控制背光，`card0-DSI-1 connected`，登录界面正常显示；触控 `stmfts`（i2c-14 0x49）正常注册 |
+| 3D GPU                     |  Y  | **本次**把 `qcom/a630_sqe.fw`、`qcom/a630_gmu.bin`、`qcom/sdm845/Xiaomi/dipper/a630_zap.mbn` 预置进 initramfs（msm DRM 在 t≈0.56s 即加载固件，早于 rootfs 挂载），freedreno/turnip 正常绑定 Adreno 630，`/dev/dri/renderD128` 出现；`vulkaninfo` 识别 `Turnip Adreno (TM) 630`，`vkCmdFillBuffer` 4 MiB 实测 6 ms、回读零偏差 |
+| Wifi Wi‑Fi                 |  Y  | `wlan0` UP（WCN3990 / ath10k_snoc）。**本次**实测吞吐（iperf3，对端 `192.168.1.31`，5 GHz）：反向（对端→手机）671 / 669 Mbit/s、正向（手机→对端）680 / 678 Mbit/s，全程 `Retr 0`、Cwnd 稳定 8 MB，接近 2×2 / 80 MHz 的实际上限                                                                                                              |
 | Bluetooth 蓝牙               |  Y  | `hciconfig -a` 为 **UP RUNNING**，`bluetooth.service` 运行中                                                                                                                                                                                                                                                                           |
-| Modem 移动数据 4G              |  N  | `mmcli -m 0` 报 "couldn't find modem"（MPSS 未起），4G 待做                                                                                                                                                                                                                                                                               |
+| Modem 移动数据 4G              |  Y  | **本次**修复：`&ipa` 节点补回 `qcom,gsi-loader = "self"` 与 `memory-region = <&ipa_fw_mem>`。此前缺 `memory-region` 使 `ipa_firmware_load()` 以 `-ENODEV` 失败、GSI 不启动，`rmnet_ipa0` 不出现，ModemManager 拒绝建 modem；现在 IPA 正常 setup，`qmapmux0.0` 拿到 IP，`mmcli -m 0` 显示 `state: connected` / `access tech: lte` / `CHN-CT` 已注册，4G 实 ping 223.5.5.5 4/4 通、RTT ~29 ms |
 | Audio 音频                   |  Y  | UCM `Dipper-HiFi`；扬声器（TAS2557，QUAT_MI2S_RX / MultiMedia3）与内置麦 **AMIC3 → MIC BIAS1** 均已验证；**本次**修复麦克风偏置路由（灵敏度恢复约 +35 dB），增益设为 ADC3 Volume 8 / DEC0 Volume 104（+28 dB）                                                                                                                                                              |
 | Swap 内存交换 zram             |  Y  | `/dev/zram0` **4 GiB** zstd，priority 100                                                                                                                                                                                                                                                                                          |
 | Power 电源守护（低电量安全关机 / 充电限流） |  Y  | **本次**新增 `polaris-power-guard.service`：低电量时主动干净关机（避免 UFS 非正常断电），插电时把 `pmi8998-charger` 的输入限流从驱动默认 **500 mA** 抬到 1.5 A；阈值见 `/etc/default/polaris-power-guard`                                                                                                                                          |
@@ -40,10 +43,10 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 | USB OTG USB 主机 / Type-C PD |  Y  | **本次**实测通过：插 OTG 转接即由 tcpm 自动切 host（无需手写 role），`xhci-hcd` 枚举出 U 盘并正常挂载读写（读 26.3 MB/s、写 21.4 MB/s，3.4 GB `squashfs` 的 md5 与盘上 `md5sum.txt` 逐位一致）；插 PD 充电器协商出 **PD 3.0 / PPS 9V 2A（18 W）**，`port0` 转 `[sink]`、电池实际充入约 636 mA。仅验到 USB 2.0 High Speed，PD 未测 20V 档                                                                                                                                                   |
 | ADB 直连                     |  Y  | `polaris-adbd.service` 运行中，`adb devices` 显示 `dipper`                                                                                                                                                                                                                                                                             |
 | Keyboard 虚拟键盘              |  Y  | `fbkeyboard.service` 运行中                                                                                                                                                                                                                                                                                                         |
-| Keys 电源 / 音量键              |  P  | `polaris-keys.service` 运行中，但 dipper 的按键映射未逐一验证                                                                                                                                                                                                                                                                                  |
+| Keys 电源 / 音量键              |  Y  | **本次**修复电源键并实测通过：原脚本硬编码 `/sys/class/backlight/backlight`（polaris 的名字），dipper 是 `ae94000.dsi.0`，每次按电源键都 `FileNotFoundError`、服务被 systemd 反复重启；改为运行期自动发现背光。连按 8 次 → 日志 8 条、亮度严格按 40%→80%→熄 循环（`409/818/0`）。音量键实测也全对：短按注入方向键（`kbd event5`，`tap -> arrow 103/108`）、长按调 PulseAudio 音量（0.4s 触发后每 0.2s ±5%，50%→130%→45% 与日志档数吻合） |
 | Polkit 普通用户免密管理网络          |  Y  | 沿用 polaris 的 `/etc/polkit-1/rules.d/49-polaris-network.rules`                                                                                                                                                                                                                                                                     |
-| Suspend 挂起 / 休眠            |  N  | 沿用 polaris 的整体禁用策略                                                                                                                                                                                                                                                                                                              |
-| Camera 摄像头                 |  N  | 内核与设备树层面未包含                                                                                                                                                                                                                                                                                                                      |
+| Suspend 挂起 / 休眠            |  N  | 按设计**永久禁用**，**本次实测确认**：`sleep` / `suspend` / `hibernate` / `hybrid-sleep` / `suspend-then-hibernate` 五个目标 unit 全部 `masked`，logind 空闲与各按键动作全部 `ignore`。空闲 10 分钟由内核 `consoleblank=600` **完全熄灭屏幕**（DPMS 下电，非仅关背光）                                                                                                                            |
+| Camera 摄像头                 |  N  | 按设计不含（内核与设备树层面未包含）。需要时可参考 <https://github.com/2114460639/pmos-polaris-fixes> 里 polaris 的启用方式                                                                                                                                                                                                            |
 
 ## 目录结构
 
@@ -234,17 +237,35 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
     `/usr/share/consolefonts/Uni2-Terminus32x16.psf.gz`（文件名是「高x宽」= 32 高 × 16 宽）；
   - 保险：`fbkeyboard.service` 的 drop-in 在 `console-setup.service` 之后再对 `/dev/tty1`
     显式 `setfont`，确保登录用的那个控制台一定是大字体。
-- **电源键 / 音量键**（`polaris-keys.service`）：服务在运行，但其具体按键行为
-  （电源键循环亮度、音量键注入方向键 / 调 PulseAudio 音量）**沿用 polaris 配置，
-  未在 dipper 上逐一验证**；且本机无背光控制（`/sys/class/backlight` 为空），
-  亮度循环预计无实际效果。
-- **永不挂起 / 十分钟熄屏**：
+- **电源键 / 音量键**（`polaris-keys.service`）：**本次**修复了电源键。
+  原脚本（继承自 polaris）把背光目录硬编码为 `/sys/class/backlight/backlight`
+  （MIX 2S 的名字），而 dipper 是 `/sys/class/backlight/ae94000.dsi.0`，于是每次按
+  电源键都抛 `FileNotFoundError`、服务被 systemd 反复重启（`NRestarts` 不断增长）。
+  现在改为运行期用 `find_backlight()` 自动发现背光设备，并对背光读写全程做容错：
+  按电源键一次 = 40% → 80% → 熄 → 40% 循环（开机时若 systemd-backlight 恢复出
+  极暗的 ~1% 亮度，`ensure_min()` 会先抬到 40%）。
+  音量键沿用 polaris 配置，**本次一并实测通过**：短按注入方向键（`tap -> arrow 103/108`，
+  uinput 设备 `polaris-keys` 带 `kbd` handler，箭头确实进控制台），长按调 PulseAudio 音量
+  （`runuser -u user -- env XDG_RUNTIME_DIR=/run/user/1000 pactl set-sink-volume`；0.4s 触发，
+  之后每 0.2s ±5%，实测 50%→130%→45% 与日志档数吻合）。硬件无可调 mixer，只能用软件音量。
+  另外把该 unit 从 `Restart=on-failure` 改成 **`Restart=always`**（`RestartSec=1` 已有）：
+  基础镜像继承的 on-failure 把 SIGTERM / 正常 `exit 0` 视为成功，进程一旦退出就永久停掉，
+  无头机上电源键和音量键会一起失效、只能重启恢复；实测发 SIGTERM 后 systemd 自动拉起
+  （`MainPID` 变化、`NRestarts=1`）。该 unit 原先不在 `apply-dipper-overlay.sh` 的注入清单里
+  （来自 polaris 基础镜像），现已补上注入项。
+- **永不挂起 / 十分钟完全熄屏**（**本次实测确认**）：
   - `logind` 已设 `IdleAction=ignore`、`IdleActionSec=0`，盖子/挂起/休眠键全部忽略，
     `suspend` / `hibernate` / `hybrid-sleep` / `suspend-then-hibernate` / `sleep.target`
-    均已 mask 到 `/dev/null`，系统**永不挂起或休眠**（沿用 polaris 策略）；
-  - 内核命令行加 `consoleblank=600`：空闲 10 分钟后**只关闭屏幕背光**（不改系统状态），
-    按任意键即点亮；本机无背光控制，实际表现**未验证**。`HandlePowerKey=ignore` 把电源键
-    让给 `polaris-keys` 循环亮度，不会因误按关机。
+    均已 mask 到 `/dev/null`，系统**永不挂起或休眠**。实测 `systemctl list-unit-files`
+    这 5 个 unit 全部为 `masked`，`/etc/systemd/logind.conf.d/99-polaris.conf` 里
+    `HandlePowerKey( LongPress )`、`HandleSuspendKey( LongPress )`、
+    `HandleHibernateKey( LongPress )`、`HandleLidSwitch*`、`IdleAction` 全部 `ignore`；
+  - 内核命令行加 `consoleblank=600`：空闲 10 分钟后**完全熄灭屏幕**——VT blanking 会让 fbcon
+    走 `VESA_POWERDOWN` 把显示整体下电，实测背光设备 `bl_power=4`（`FB_BLANK_POWERDOWN`，
+    背光被强制关断）、`/sys/class/graphics/fb0/blank=1`，`brightness` 保持原值不丢；按任意键
+    唤醒后恢复 `bl_power=0`、`brightness=818`（40% 档）。这是**整屏 DPMS 下电**，不是"只关背光"，
+    面板供电轨（`panel_vci_vreg` / `panel_vddio_vreg`，`use_count` 1/2）不会撤除，属正常行为。
+    `HandlePowerKey=ignore` 把电源键让给 `polaris-keys` 循环亮度，不会因误按关机。
 - **联网**：
   - **USB 网络**：设备侧固定 `172.16.42.1/24`，并自带 DHCP 服务，电脑插上线一般会自动
     拿到 `172.16.42.2`；由 systemd-networkd 管理 `usb0`（NetworkManager 已通过
@@ -253,8 +274,8 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
     `wpa_supplicant`、`bluetooth` 也已启用。WCN3990（`ath10k_snoc`）驱动绑定后
     `wlan0` 呈现为 **UP**。WCN3990 固件按内核实际查找的标准路径放置
     （`ath10k/WCN3990/hw1.0/…`、`qca/…`、`regulatory.db` 等）。
-    > dipper 的 4G 未起（见下），因此 polaris 上那条「WiFi 依赖 MPSS/WLFW」的完整链路
-    > 在 dipper 上的对应关系**未逐一验证**；本机以「`wlan0` 已 UP」为准。
+    > 4G 已修好（见下），但 polaris 上那条「WiFi 依赖 MPSS/WLFW」的完整链路在
+    > dipper 上的对应关系**未逐一验证**；本机以「`wlan0` 已 UP」为准。
   - **普通用户可直接改网络（无需 sudo）**：`user` 已在 `netdev` / `sudo` 组，镜像另加
     `/etc/polkit-1/rules.d/49-polaris-network.rules`，把 `org.freedesktop.NetworkManager.*`
     下的**全部动作**授予这两个组。因此不必 `sudo`，`user` 即可 `nmtui` / `nmcli` 连接 Wi‑Fi、
@@ -268,10 +289,16 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
     从内核 cmdline 的 `androidboot.serialno` 派生确定性 MAC（本地管理地址，前缀 `02:00:`），
     不再每次开机随机（机制沿用 polaris；dipper 的具体 MAC 未记录）。
     验证：`cat /sys/class/net/wlan0/address` 开机两次应一致。
-  - **移动数据（4G / SIM）**：**本机暂不可用**。`mmcli -m 0` 报
-    `couldn't find modem`（MPSS 未起），需后续排查基带启动链路，**4G 待做**。
-    镜像内仍保留了 polaris 那套 ModemManager / `polaris-modem-uim.service` /
-    `qc-*` 基带守护进程配置（沿用 polaris 配置），未在 dipper 上验证。
+  - **移动数据（4G / SIM）**：**本次已修好**。根因是设备树的 `&ipa` 节点缺
+    `memory-region`：`ipa_firmware_load()` 拿不到预留内存就返回 `-ENODEV`，GSI 不启动，
+    `rmnet_ipa0` 不出现，ModemManager 的 `qcom-soc` 插件因找不到 net port 而拒绝建
+    modem（`Failed to find a net port in the QMI modem`）。补上
+    `qcom,gsi-loader = "self"` + `memory-region = <&ipa_fw_mem>`（与 polaris 上游一致）后：
+    IPA `setup completed successfully`，`rmnet_ipa0` + `qmapmux0.0` UP，
+    `mmcli -m 0` 显示 `state: connected` / `access tech: lte` / `CHN-CT` 已注册、
+    信号 92%，`qmapmux0.0` 拿到 `10.62.69.152/28`，`ping -I qmapmux0.0 223.5.5.5`
+    4/4 通、RTT ≈29 ms。这条 IPA 通路也是 `polaris-modem-uim.service`（QMI 建
+    provisioning session）能正常工作的前提。
   - **SSH**：默认开启，`ssh user@172.16.42.1`，密码 `password`。主机密钥在首启自动生成
     （镜像内不含任何密钥，machine-id 亦为空），由自建的 `polaris-ssh-keygen.service` 负责：
     Debian 自带的 `sshd-keygen.service` 依赖 `ConditionFirstBoot=yes`，而 systemd 启动时会
@@ -306,15 +333,16 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
   验证：`zramctl`、`cat /proc/swaps`、`free -h`（Swap 一栏显示 4.0 GiB）。
 - **常用工具**：`nano`、`less`、`iw`、`rfkill`、`e2fsprogs`、`usbutils`、`iproute2`、
   `alsa-utils`、`python3` 等；**已预装** **`fastfetch`、`iperf3`**，并沿用 polaris 的
-  `libvulkan1` + `mesa-vulkan-drivers`（turnip / freedreno ICD）——**但 dipper 无 DRM
-  设备、GPU 未加载（见功能表），这些包在 dipper 上未验证**。系统用官方 Debian 源，
-  需要别的软件直接 `sudo apt update && sudo apt install <包名>` 即可（`apt` 可用，免密 sudo）。
+  `libvulkan1` + `mesa-vulkan-drivers`（turnip / freedreno ICD）——**本次**已验证
+  Adreno 630 在 turnip 下可正常渲染（`vulkaninfo` / `vkCmdFillBuffer`）。系统用官方
+  Debian 源，需要别的软件直接 `sudo apt update && sudo apt install <包名>` 即可
+  （`apt` 可用，免密 sudo）。
 
 ## 分区与文件系统
 
 | 镜像                    | 刷入分区       | 内容                                                                                                                                            | 大小                                                              |
 | --------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#80，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs                     | 25,825,280 B                                                    |
+| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#83，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch` / `dipper-panel.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs（含 A630 GPU 固件）                     | 25,858,048 B                                                    |
 | `xiaomi-dipper.img`   | `userdata` | Debian 根文件系统（ext4，4096 字节块，**首启自动扩容到整块 userdata**，卷标 `dipper-root`），**Android sparse 格式**                                          | 1,762,002,072 B (≈1680 MiB / 1.64 GiB，声明覆盖 550502 个 4K 块 ≈ 2150 MiB) |
 
 > 同一份根文件系统的 raw ext4 版为
@@ -336,7 +364,10 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
   userdata 分区而定）。若个别情况下首启未自动扩容，手动执行
   `sudo resize2fs /dev/sda21` 即可（瞬时完成）。
 - initramfs 由 Debian `initramfs-tools` 生成（`MODULES=list`：ext4/ufs/显示等驱动已编入
-  内核，故无需带模块），内含自建的 `polaris-usb-gadget` 所需组件。
+  内核，故无需带模块），内含自建的 `polaris-usb-gadget` 所需组件，以及 A630 GPU 固件
+  （`qcom/a630_sqe.fw` / `qcom/a630_gmu.bin` / `qcom/sdm845/Xiaomi/dipper/a630_zap.mbn`，
+  由 `rootfs/etc/initramfs-tools/hooks/a630-gpu-firmware` 注入）：msm DRM 在切根前
+  就加载 GPU 固件，因此这些固件必须随 initramfs 携带。
 
 ## 已知限制
 
@@ -367,15 +398,15 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
   注意：只验证到 **USB 2.0 High Speed**（手头 U 盘是 USB2 设备），
   `usb2` 的 SuperSpeed 总线未插 USB3 外设验证；PD 也只跑到了 9 V 档。
 - **本次未验证 / 待做的功能**（均**非**"可用"，请勿引用为已验证）：
-  - 4G / 移动数据（N）：MPSS 未起，`mmcli` 找不到 modem，待做。
-  - GPU / 3D（N）：无 DRM 设备，未加载 freedreno/turnip；Mesa/Vulkan 包沿用 polaris，未验证。
-  - 面板 / 背光驱动：无 DSI/DRM 面板驱动（EA8074 面板驱动待做），
-    `/sys/class/backlight` 为空、无背光控制。
-  - 电源键 / 音量键映射：`polaris-keys.service` 运行中，但具体行为未逐一验证。
+  - 摄像头（见下）。
+  - 音量键的**箭头注入**只验到"事件已进控制台键盘层"（`kbd` handler + `tap -> arrow 103/108`），
+    没在 readline 里实际确认上/下翻历史；长按调音量是实测数值确认的。
 - 无图形界面、无 GPU 桌面（本版本刻意如此，控制台不受影响）。
-- 摄像头在内核与设备树层面未包含，不可用。
-- 挂起/休眠已禁用（永不休眠）；空闲 10 分钟只按 `consoleblank=600` 熄灭屏幕背光，
-  但本机无背光控制，实际表现未验证。
+- 摄像头在内核与设备树层面未包含，不可用（需要时可参考
+  <https://github.com/2114460639/pmos-polaris-fixes> 里 polaris 的启用方式）。
+- 挂起/休眠已永久禁用（`sleep.target` 等 5 个目标 unit 全部 `masked`、logind 全部 `ignore`）；
+  空闲 10 分钟由 `consoleblank=600` **完全熄灭屏幕**（背光 `bl_power=4` = `FB_BLANK_POWERDOWN`，
+  面板供电轨不撤除，按键唤醒后按原亮度恢复）。
 - 首次开机需生成 SSH 密钥并扩容根分区，比后续开机慢。
 
 ## 校验

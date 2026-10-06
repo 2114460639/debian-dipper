@@ -7,7 +7,10 @@ After=systemd-logind.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/sbin/polaris-keys
-Restart=on-failure
+# always, not on-failure: these keys are the only way to control brightness and
+# volume on a headless console, and a clean exit / SIGTERM (which on-failure
+# treats as success) would otherwise leave the daemon dead until reboot.
+Restart=always
 RestartSec=1
 
 [Install]

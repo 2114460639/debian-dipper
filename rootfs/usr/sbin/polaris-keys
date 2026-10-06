@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Key handling for the Xiaomi MIX 2S (xiaomi-polaris) console image.
+
+Runs as a system service (root) and adds the three things a plain framebuffer
+console cannot do on its own:
+
+  * power key  (pm8941_pwrkey) -> brightness cycle: 40% -> 80% -> off -> 40% ...
+  * volume up  (gpio-keys)     -> tap: Up arrow   | hold: sink volume up
+  * volume down (pm8941_resin) -> tap: Down arrow | hold: sink volume down
+
+Arrow keys are injected through a small uinput device (the console has no other
+way to turn a volume key into a cursor key); the volume is changed through
+PulseAudio in the console user's session.
+"""
+
+import fcntl
+import os
+import pwd
+import select
+import struct
+import subprocess
+import sys
+import time
+
+INPUT_DIR = "/dev/input"
+# Backlight device names are per-machine (polaris: "backlight",
+# dipper: "ae94000.dsi.0"), so the actual directory is discovered at runtime
+# instead of hardcoded -- a wrong name made every power-key press die with
+# FileNotFoundError and restart the service.
+BACKLIGHT_ROOT = "/sys/class/backlight"
+
+# Device names as they appear in the device tree.
+POWER_KEY_DEV = "pm8941_pwrkey"
+VOL_UP_DEV = "gpio-keys"
+VOL_DOWN_DEV = "pm8941_resin"
+
+HOLD_SECONDS = 0.4            # shorter press = tap (cursor key)
+VOLUME_STEP = 5               # percent per volume step
+VOLUME_REPEAT_SECONDS = 0.2   # repeat interval while a volume key is held
+
+# Power key brightness cycle: press 1 -> 40%, press 2 -> 80%, press 3 -> off,
+# press 4 -> 40% again (the list just wraps around).
+BRIGHTNESS_CYCLE = (0.40, 0.80, 0.0)
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+KEY_UP = 103
+KEY_DOWN = 108
+
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+UI_DEV_CREATE = 0x5501
+BUS_USB = 0x03
+
+# NOTE: '<' uses standard sizes, so 'l' would be 4 bytes. input_event on
+# arm64 is tv_sec(8) + tv_usec(8) + type(2) + code(2) + value(4) = 24 bytes.
+EVENT = struct.Struct("<qqHHi")
+EVENT_SIZE = EVENT.size
+
+DEBUG = bool(os.environ.get("POLARIS_KEYS_DEBUG"))
+
+
+def debug(message):
+    if DEBUG:
+        print("polaris-keys: " + message, file=sys.stderr, flush=True)
+
+
+def eviocgname(length=256):
+    return 0x80000000 | (length << 16) | (ord("E") << 8) | 0x06
+
+
+def device_name(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        buf = fcntl.ioctl(fd, eviocgname(), b"\0" * 256)
+    finally:
+        os.close(fd)
+    return buf.split(b"\0", 1)[0].decode("utf-8", "replace")
+
+
+def find_devices():
+    wanted = {
+        POWER_KEY_DEV: "power",
+        VOL_UP_DEV: "volume-up",
+        VOL_DOWN_DEV: "volume-down",
+    }
+    found = {}
+    for entry in sorted(os.listdir(INPUT_DIR)):
+        if not entry.startswith("event"):
+            continue
+        path = os.path.join(INPUT_DIR, entry)
+        try:
+            role = wanted.get(device_name(path))
+        except OSError:
+            continue
+        if role and role not in found:
+            found[role] = path
+    return found
+
+
+class KeyInjector:
+    """Injects cursor key presses through uinput."""
+
+    def __init__(self, name="polaris-keys"):
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_SYN)
+        for code in (KEY_UP, KEY_DOWN):
+            fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+        # Legacy uinput_user_dev: name[80], input_id (4 x u16), ff_effects_max,
+        # then absmax/absmin/absfuzz/absflat (4 x ABS_CNT x s32).
+        setup = struct.pack("<80sHHHHI", name.encode(), BUS_USB, 1, 1, 1, 0)
+        os.write(self.fd, setup + b"\0" * (4 * 64 * 4))
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+
+    def tap(self, code):
+        now = time.time()
+        sec, usec = int(now), int((now - int(now)) * 1000000)
+        for value in (1, 0):
+            os.write(self.fd, EVENT.pack(sec, usec, EV_KEY, code, value))
+        os.write(self.fd, EVENT.pack(sec, usec, EV_SYN, 0, 0))
+
+
+def find_backlight():
+    """Return the first usable /sys/class/backlight/<dev> directory."""
+    try:
+        entries = sorted(os.listdir(BACKLIGHT_ROOT))
+    except OSError:
+        return None
+    for entry in entries:
+        directory = os.path.join(BACKLIGHT_ROOT, entry)
+        if (os.path.exists(os.path.join(directory, "brightness"))
+                and os.path.exists(os.path.join(directory, "max_brightness"))):
+            return directory
+    return None
+
+
+class Backlight:
+    """Drives the panel backlight through the power-key brightness cycle.
+
+    Each power key press advances one step of BRIGHTNESS_CYCLE (40% -> 80%
+    -> off -> wrap), so the fourth press is always back at 40%.
+    """
+
+    def __init__(self, directory=None):
+        self.directory = directory or find_backlight()
+        if self.directory:
+            self.brightness = os.path.join(self.directory, "brightness")
+            self.max_brightness = os.path.join(self.directory, "max_brightness")
+        else:
+            self.brightness = None
+            self.max_brightness = None
+        self.step = 0
+
+    def available(self):
+        return self.brightness is not None
+
+    def _read(self, path):
+        with open(path) as fh:
+            return int(fh.read().strip())
+
+    def _write(self, value):
+        with open(self.brightness, "w") as fh:
+            fh.write(str(value))
+
+    def ensure_min(self):
+        """Boot rescue: systemd-backlight restores whatever was saved last,
+        which on this device is often ~1% (the "screen is extremely dim"
+        complaint).  Any non-zero brightness below the first cycle level
+        (40%) is lifted to it, so every boot starts at a usable level and
+        the first power key press matches the documented cycle."""
+        if not self.available():
+            return
+        try:
+            current = self._read(self.brightness)
+            floor = int(self._read(self.max_brightness) * BRIGHTNESS_CYCLE[0])
+        except OSError:
+            return
+        if 0 < current < floor:
+            debug("backlight %d < 40%%, raising to %d" % (current, floor))
+            try:
+                self._write(floor)
+            except OSError:
+                pass
+
+    def cycle(self):
+        if not self.available():
+            debug("power: no backlight device, ignoring")
+            return
+        try:
+            value = int(self._read(self.max_brightness) * BRIGHTNESS_CYCLE[self.step])
+            debug("power: step %d -> %d" % (self.step, value))
+            self._write(value)
+        except OSError as exc:
+            debug("power: backlight write failed: %s" % exc)
+            return
+        self.step = (self.step + 1) % len(BRIGHTNESS_CYCLE)
+
+
+class Volume:
+    """Changes the default sink volume in the console user's session."""
+
+    def __init__(self):
+        self.user = os.environ.get("POLARIS_CONSOLE_USER", "user")
+        try:
+            self.uid = pwd.getpwnam(self.user).pw_uid
+        except KeyError:
+            self.uid = None
+        self.runtime_dir = "/run/user/%d" % self.uid if self.uid is not None else None
+
+    def adjust(self, up):
+        if not self.runtime_dir or not os.path.isdir(self.runtime_dir):
+            return
+        step = "%d%%" % VOLUME_STEP
+        try:
+            subprocess.Popen(
+                ["runuser", "-u", self.user, "--", "env",
+                 "XDG_RUNTIME_DIR=" + self.runtime_dir,
+                 "pactl", "set-sink-volume", "@DEFAULT_SINK@",
+                 "+" + step if up else "-" + step],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+
+def main():
+    devices = find_devices()
+    debug("devices: %s" % sorted(devices.items()))
+    if "power" not in devices:
+        print("polaris-keys: power key device not found", file=sys.stderr)
+        return 1
+
+    injector = KeyInjector()
+    backlight = Backlight()
+    backlight.ensure_min()   # lift a ~1% boot brightness to the 40% cycle start
+    volume = Volume()
+
+    poller = select.poll()
+    roles = {}
+    for role, path in devices.items():
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        roles[fd] = role
+        poller.register(fd, select.POLLIN)
+
+    state = {r: {"down": False, "pressed_at": 0.0, "volume": False, "stepped_at": 0.0}
+             for r in ("volume-up", "volume-down")}
+
+    while True:
+        timeout = 50 if any(state[r]["down"] for r in state) else None
+        for fd, _ in poller.poll(timeout):
+            data = os.read(fd, EVENT_SIZE * 64)
+            if not data:
+                print("polaris-keys: input device went away", file=sys.stderr)
+                return 1
+            role = roles[fd]
+            for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+                _, _, type_, _, value = EVENT.unpack_from(data, off)
+                if type_ != EV_KEY:
+                    continue
+                if role == "power":
+                    if value == 1:
+                        debug("power key: next brightness step")
+                        backlight.cycle()
+                    continue
+                key = state[role]
+                if value == 1 and not key["down"]:
+                    debug("%s: pressed" % role)
+                    key["down"] = True
+                    key["pressed_at"] = time.monotonic()
+                    key["volume"] = False
+                elif value == 0 and key["down"]:
+                    if not key["volume"]:
+                        arrow = KEY_UP if role == "volume-up" else KEY_DOWN
+                        debug("%s: tap -> arrow %d" % (role, arrow))
+                        injector.tap(arrow)
+                    else:
+                        debug("%s: hold released (volume)" % role)
+                    key["down"] = False
+                    key["volume"] = False
+
+        now = time.monotonic()
+        for role in (("volume-up", True), ("volume-down", False)):
+            key = state[role[0]]
+            if not key["down"]:
+                continue
+            if not key["volume"]:
+                if now - key["pressed_at"] >= HOLD_SECONDS:
+                    key["volume"] = True
+                    key["stepped_at"] = now
+                    debug("%s: hold -> volume" % role[0])
+                    volume.adjust(role[1])
+            elif now - key["stepped_at"] >= VOLUME_REPEAT_SECONDS:
+                key["stepped_at"] = now
+                volume.adjust(role[1])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,44 @@
+#!/bin/sh
+# 把 Adreno A630 固件预置进 initramfs。
+#
+# 为什么需要：msm DRM 在 t≈0.56s 就探测 GPU 并调用 adreno_request_fw()，
+# 而真正的根文件系统要到 t≈1.4s 才挂载。此时内核固件加载器只能看到
+# initramfs 里的 /lib/firmware，因此固件必须预置，否则：
+#   msm_dpu ae01000.display-controller: Direct firmware load for
+#       qcom/a630_sqe.fw failed with error -2
+#   [drm:adreno_request_fw] *ERROR* failed to load a630_sqe.fw
+# GPU 无法初始化（无 /dev/dri/renderD128）。
+PREREQ=""
+
+prereqs() {
+	echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+# DESTDIR 由 mkinitramfs 设置；未设置时什么也不做，避免误写宿主机 /
+[ -n "$DESTDIR" ] || exit 0
+
+for f in \
+	lib/firmware/qcom/a630_sqe.fw \
+	lib/firmware/qcom/a630_gmu.bin \
+	lib/firmware/qcom/sdm845/dipper/a630_zap.mbn
+do
+	[ -f "/$f" ] || continue
+	mkdir -p "$DESTDIR/$(dirname "$f")"
+	cp -aL "/$f" "$DESTDIR/$f"
+done
+
+# 设备树 zap-shader 走的是 Xiaomi/ 软链路径，这里保持与 rootfs 相同的相对链接
+if [ -f "$DESTDIR/lib/firmware/qcom/sdm845/dipper/a630_zap.mbn" ]; then
+	mkdir -p "$DESTDIR/lib/firmware/qcom/sdm845/Xiaomi/dipper"
+	ln -sf ../../dipper/a630_zap.mbn \
+		"$DESTDIR/lib/firmware/qcom/sdm845/Xiaomi/dipper/a630_zap.mbn"
+fi
+
+exit 0

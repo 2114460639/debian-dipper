@@ -3,7 +3,7 @@
 内核来自 postmarketOS 的 pmaports 包
 `device/community/linux-postmarketos-qcom-sdm845`（上游源码
 `gitlab.com/sdm845-mainline/linux`，tag `sdm845-7.1-rc1-r0`，Linux 7.1-rc1）。
-本版为 **7.1\_rc1-r79**（内核版本串 `7.1.0-rc1-sdm845`，`#80`，`pkgrel+1`）。
+本版为 **7.1\_rc1-r83**（内核版本串 `7.1.0-rc1-sdm845`，`#84`，`pkgrel+1`）。
 
 本项目在这个包上针对小米 8（dipper）只做下面这些改动，其余全部沿用上游。
 
@@ -19,6 +19,10 @@
    所需的 `xbl_mem`（2 MiB @ 0x85d00000）扩展。
    屏幕走 `simple-framebuffer`：`1080x2248`、`a8r8g8b8`、`stride = 1080*4`，
    显存取自 `cont_splash_mem`。
+   根节点 `compatible` 为 `"xiaomi,dipper", "qcom,sdm845"`（与 polaris / beryllium 一致）。
+   **本轮修正**：原先多写了一个无人使用的 `"xiaomi,dipper-common"` 条目，而 `fastfetch`
+   在 arm64 上会取 `/proc/device-tree/compatible` 的**第 2 项**当 CPU 名（实测规则，见下），
+   于是显示成 `dipper-common`；去掉该冗余条目后显示 `sdm845`。
 2. **修内置麦偏置路由（本轮重点）**：上游 `&sound` 的 `audio-routing` 是从 beryllium
    照抄的，把 `"AMIC3"` 指到 `"MIC BIAS3"`。dipper 的内置麦胶囊实际由
    **MIC BIAS1** 供电（厂商 `dipper-audio-overlay.dtsi` 也是这么接的），只路由
@@ -26,7 +30,7 @@
    本补丁把 `AMIC3` 改路由到 `MIC BIAS1`（BIAS3 实测只有约 2 dB 电平、可忽略，
    一并去掉）。
    **验证**：改动后重编，产出的 `sdm845-xiaomi-dipper.dtb` 与设备上验证通过的
-   DTB 逐字节一致，md5 = `22b4d2799c19ee88ac0bced5e3eb6f7d`。
+   DTB 逐字节一致，md5 = `cbcf4eb621e3ece65d253401030bb48a`（r83，含上面的 `compatible` 修正）。
 3. **去掉 `wcn3990-pmu` 电源序列器节点与 `sw_ctrl` pinctrl**：上游把 Wi‑Fi / 蓝牙的
    供电接到 `qcom,wcn3990-pmu` 电源序列器节点的内部调节器上；而本内核的
    `CONFIG_POWER_SEQUENCING_QCOM_WCN` 只实现了序列器本身、**不会注册该节点的
@@ -86,7 +90,7 @@ pmbootstrap build linux-postmarketos-qcom-sdm845 --force
 产物：
 
 ```
-~/.local/var/pmbootstrap/packages/v26.06/aarch64/linux-postmarketos-qcom-sdm845-7.1_rc1-r79.apk
+~/.local/var/pmbootstrap/packages/v26.06/aarch64/linux-postmarketos-qcom-sdm845-7.1_rc1-r83.apk
 └── boot/vmlinuz                                     ← 内核（zImage）
 └── boot/dtbs/qcom/sdm845-xiaomi-dipper.dtb          ← 含改动 1 的 DTS
 └── usr/lib/modules/7.1.0-rc1-sdm845/kernel/drivers/input/touchscreen/stmfts.ko.zst  ← 改动 2 的产物
@@ -95,7 +99,7 @@ pmbootstrap build linux-postmarketos-qcom-sdm845 --force
 验证有没有编进去：
 
 ```bash
-uname -a    # 应显示 #80-postmarketos-qcom-sdm845（KBUILD_BUILD_VERSION = pkgrel+1）
+uname -a    # 应显示 #84-postmarketos-qcom-sdm845（KBUILD_BUILD_VERSION = pkgrel+1）
 ```
 
 ## 打包 boot.img
