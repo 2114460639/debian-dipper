@@ -102,8 +102,8 @@ debian-dipper-flash-console/
 仓库里**只放方法**（脚本、文档、补丁、配置），镜像和第三方二进制统一发在
 [Releases](https://github.com/2114460639/debian-dipper/releases)。
 
-发布时会把全部刷机所需打进一个 `debian-dipper-flash-console.7z`（**本轮尚未打包，
-压缩后大小与 sha256 以实际发布为准**）：
+全部刷机所需已打进一个 `debian-dipper-flash-console.7z`（压缩后大小与 sha256 见
+[Releases](https://github.com/2114460639/debian-dipper/releases)）：
 
 - `images/boot.img`（25 MiB）、`images/xiaomi-dipper.img`（≈1.64 GiB，**Android sparse 格式**）、`images/*.md5`
 - `flash.sh` / `flash.bat`
