@@ -14,8 +14,8 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 
 - 发行版：Debian GNU/Linux 13 (trixie)，aarch64
 - 设备：小米 8（dipper，Qualcomm SDM845，内存约 5.5 GiB 可见）
-- 内核：postmarketOS 的 `linux-postmarketos-qcom-sdm845` **7.1\_rc1-r76**
-  （版本串 `7.1.0-rc1-sdm845`，`#77`）；在上游基础上打了 dipper 设备树与触控两处补丁
+- 内核：postmarketOS 的 `linux-postmarketos-qcom-sdm845` **7.1\_rc1-r79**
+  （版本串 `7.1.0-rc1-sdm845`，`#80`）；在上游基础上打了 dipper 设备树与触控两处补丁
   （`dipper.patch`、`dipper-stmfts5-scan-mode.patch`），见 [kernel/README.md](kernel/README.md)
 - 构建方式：**官方 Debian 源 + debootstrap**（非 Mobian），第三方预编译件仅为
   pmOS 内核/固件、静态 adbd、fbkeyboard 与 `polaris-keys`
@@ -222,7 +222,7 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
     就按「历史行 + 实时内容」整屏重绘（按属性分段 `putcs`，与 `fbcon_redraw()` 同款）。
     新的控制台输出会自动落回实时画面，切 VT 也会归零；历史缓冲只在
     `fbcon_init`/`fbcon_resize` 这类可睡眠上下文里分配，滚动路径零分配。
-    内核版本 `7.1.0-rc1-sdm845 #77-postmarketos-qcom-sdm845`（pkgrel 76）。
+    内核版本 `7.1.0-rc1-sdm845 #80-postmarketos-qcom-sdm845`（pkgrel 79）。
   - 另外还有 `Esc / Tab / F10` 与 `Shift / Ctrl / Alt` 等功能键行。
   - **长按连发**：`Bcksp` 与四个方向键（`↑ ↓ ← →`）按住不放会持续生效——按住约 0.4 秒
     后开始连发（约每 80 毫秒一次），松手即停；其余按键仍是抬手触发一次。
@@ -314,8 +314,8 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
 
 | 镜像                    | 刷入分区       | 内容                                                                                                                                            | 大小                                                              |
 | --------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#77，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs                     | 25,825,280 B                                                    |
-| `xiaomi-dipper.img`   | `userdata` | Debian 根文件系统（ext4，4096 字节块，**首启自动扩容到整块 userdata**，卷标 `dipper-root`），**Android sparse 格式**                                          | 1,761,997,976 B (≈1680 MiB / 1.64 GiB，声明覆盖 550502 个 4K 块 ≈ 2150 MiB) |
+| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#80，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs                     | 25,825,280 B                                                    |
+| `xiaomi-dipper.img`   | `userdata` | Debian 根文件系统（ext4，4096 字节块，**首启自动扩容到整块 userdata**，卷标 `dipper-root`），**Android sparse 格式**                                          | 1,762,002,072 B (≈1680 MiB / 1.64 GiB，声明覆盖 550502 个 4K 块 ≈ 2150 MiB) |
 
 > 同一份根文件系统的 raw ext4 版为
 > `/home/wxs/debian-dipper/out/xiaomi-dipper-2g.img`（2254856192 字节 ≈ 2150 MiB）。
@@ -380,4 +380,4 @@ cd images
 md5sum -c boot.img.md5 xiaomi-dipper.img.md5
 ```
 
-预期结果：`boot.img` = `b0e10d9f…`、`xiaomi-dipper.img` = `376ac71d…`。
+预期结果：`boot.img` = `ce37b635…`、`xiaomi-dipper.img` = `1cffb323…`。

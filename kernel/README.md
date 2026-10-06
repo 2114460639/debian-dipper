@@ -3,7 +3,7 @@
 内核来自 postmarketOS 的 pmaports 包
 `device/community/linux-postmarketos-qcom-sdm845`（上游源码
 `gitlab.com/sdm845-mainline/linux`，tag `sdm845-7.1-rc1-r0`，Linux 7.1-rc1）。
-本版为 **7.1\_rc1-r78**（内核版本串 `7.1.0-rc1-sdm845`，`#79`，`pkgrel+1`）。
+本版为 **7.1\_rc1-r79**（内核版本串 `7.1.0-rc1-sdm845`，`#80`，`pkgrel+1`）。
 
 本项目在这个包上针对小米 8（dipper）只做下面这些改动，其余全部沿用上游。
 
@@ -55,6 +55,18 @@ stmfts 的 FTS5 分支在 `input_open` 时把扫描模式 settings 直接写成 
 按 `WAIT_AFTER_SENSEOFF`（50 ms）等待扫描引擎真正停下，再用 `0x01` 只开
 `ACTIVE_MULTI_TOUCH`（bit0：MS/SS 扫描）重新起步。
 
+## 改动 3：内核 config 关闭 ath10k 调试日志
+
+`config-postmarketos-qcom-sdm845.aarch64` 里 `CONFIG_ATH10K_DEBUG` 由 `y` 改为
+`not set`（`CONFIG_ATH10K_DEBUGFS` 保留，`/sys/kernel/debug/ieee80211` 仍可用）。
+上一版带它只是为了排查 WiFi，正式版不该发布调试构建：改后
+`ath10k_core.ko.zst` 由 231,839 B 降到 206,247 B，调试日志代码不再编入。
+
+> rootfs 里的 `/usr/lib/modules/7.1.0-rc1-sdm845/.../ath10k_core.ko.zst` 必须同步更新，
+> 否则运行时从 rootfs 加载的仍是旧模块、改动等于没生效。
+> `/home/wxs/debian-dipper/apply-dipper-overlay.sh` 会自动从**最新**的 apk 里重新
+> 注入这三个 ath10k 模块，重建镜像时按顺序跑它即可。
+
 ## 构建
 
 ```bash
@@ -74,7 +86,7 @@ pmbootstrap build linux-postmarketos-qcom-sdm845 --force
 产物：
 
 ```
-~/.local/var/pmbootstrap/packages/v26.06/aarch64/linux-postmarketos-qcom-sdm845-7.1_rc1-r78.apk
+~/.local/var/pmbootstrap/packages/v26.06/aarch64/linux-postmarketos-qcom-sdm845-7.1_rc1-r79.apk
 └── boot/vmlinuz                                     ← 内核（zImage）
 └── boot/dtbs/qcom/sdm845-xiaomi-dipper.dtb          ← 含改动 1 的 DTS
 └── usr/lib/modules/7.1.0-rc1-sdm845/kernel/drivers/input/touchscreen/stmfts.ko.zst  ← 改动 2 的产物
@@ -83,7 +95,7 @@ pmbootstrap build linux-postmarketos-qcom-sdm845 --force
 验证有没有编进去：
 
 ```bash
-uname -a    # 应显示 #79-postmarketos-qcom-sdm845（KBUILD_BUILD_VERSION = pkgrel+1）
+uname -a    # 应显示 #80-postmarketos-qcom-sdm845（KBUILD_BUILD_VERSION = pkgrel+1）
 ```
 
 ## 打包 boot.img

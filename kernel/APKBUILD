@@ -5,7 +5,7 @@ maintainer="Casey Connolly <kcxt@postmarketos.org>"
 _flavor="postmarketos-qcom-sdm845"
 pkgname=linux-$_flavor
 pkgver=7.1_rc1
-pkgrel=78
+pkgrel=79
 pkgdesc="Mainline Kernel fork for SDM845 devices"
 arch="aarch64"
 _carch="arm64"
@@ -102,7 +102,7 @@ package() {
 
 sha512sums="
 94da173aaf74dd33ef8ff9015e92759481cd0da5bd8a1e52c8664fd372d48a1155655001ad2e9d26557733c71ae8bc448e4ebdf1372b8f32159907a35f0306a9  linux-sdm845-7.1-rc1-r0.tar.gz
-a627ebbac0f3fdfc23047c7e4fc94e55bceed5b1c145bc7b9bf1ee3a39ca7c25a9c7943f8d7e6bf2c16615c492d9c47438636b619327378a76d646f29642c42d  config-postmarketos-qcom-sdm845.aarch64
+2407728af7897c8a88c0cfa16713828e14d48bae6dd9ddf381382e166176dfe93f9dc7c462e13e918e969882297297191c4c5801d3254b67459907712886eb98  config-postmarketos-qcom-sdm845.aarch64
 d5a064d9463d0a54af0575893945edf4df71fd0079188ab28d1426d077e3a02988e0d6da187a6d40e9adc138446ff92a573e82f6fae126e6b98713d9653a20a6  nt35596s-prepare-prev-first.patch
 6288401b8f6eeb934a40fbad230ba82c6854b22b9c8f528367432c11142e81e82f05b0996ab0b175f0a76d128b30206b20bb5e32f05c679861f4be74d5eb32b7  polaris-battery-fg.patch
 848b320db60aeb348faf195693348187a9d04cf46194657c0017786d18d65be32e63a4bdcee49145252a6540bebc7c9630b805886d5c4dc65cfce92b2b3e238d  polaris-wifi-vht.patch
