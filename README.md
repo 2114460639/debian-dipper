@@ -42,7 +42,7 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 | USB Net USB 网络             |  Y  | `usb0` UP，设备侧 172.16.42.1                                                                                                                                                                                                                                                                                                       |
 | USB OTG USB 主机 / Type-C PD |  Y  | **本次**实测通过：插 OTG 转接即由 tcpm 自动切 host（无需手写 role），`xhci-hcd` 枚举出 U 盘并正常挂载读写（读 26.3 MB/s、写 21.4 MB/s，3.4 GB `squashfs` 的 md5 与盘上 `md5sum.txt` 逐位一致）；插 PD 充电器协商出 **PD 3.0 / PPS 9V 2A（18 W）**，`port0` 转 `[sink]`、电池实际充入约 636 mA。仅验到 USB 2.0 High Speed，PD 未测 20V 档                                                                                                                                                   |
 | ADB 直连                     |  Y  | `polaris-adbd.service` 运行中，`adb devices` 显示 `dipper`                                                                                                                                                                                                                                                                             |
-| Keyboard 虚拟键盘              |  Y  | `fbkeyboard.service` 运行中                                                                                                                                                                                                                                                                                                         |
+| Keyboard 虚拟键盘              |  Y  | `fbkeyboard.service` 运行中。**本次**改为「抬起释放」（按下只高亮、抬手才发键，与 MIX 2S 一致），并修复「按下去不释放」：抬手判定不再要求触发抬手的 slot 恰好等于 `primary_slot`，并新增 `SYN_DROPPED` 处理（内核输入缓冲区溢出丢掉抬手时只清高亮、**不补发按键**），每轮把已排队帧一次排空以消除积压。长按连发仅 `Bcksp`/方向键，抬起后不补发 |
 | Keys 电源 / 音量键              |  Y  | **本次**修复电源键并实测通过：原脚本硬编码 `/sys/class/backlight/backlight`（polaris 的名字），dipper 是 `ae94000.dsi.0`，每次按电源键都 `FileNotFoundError`、服务被 systemd 反复重启；改为运行期自动发现背光。连按 8 次 → 日志 8 条、亮度严格按 40%→80%→熄 循环（`409/818/0`）。音量键实测也全对：短按注入方向键（`kbd event5`，`tap -> arrow 103/108`）、长按调 PulseAudio 音量（0.4s 触发后每 0.2s ±5%，50%→130%→45% 与日志档数吻合） |
 | Polkit 普通用户免密管理网络          |  Y  | 沿用 polaris 的 `/etc/polkit-1/rules.d/49-polaris-network.rules`                                                                                                                                                                                                                                                                     |
 | Suspend 挂起 / 休眠            |  N  | 按设计**永久禁用**，**本次实测确认**：`sleep` / `suspend` / `hibernate` / `hybrid-sleep` / `suspend-then-hibernate` 五个目标 unit 全部 `masked`，logind 空闲与各按键动作全部 `ignore`。空闲 10 分钟由内核 `consoleblank=600` **完全熄灭屏幕**（DPMS 下电，非仅关背光）                                                                                                                            |
@@ -213,6 +213,9 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
   - 登录后主机名是 `dipper`；会话由 logind 正常管理（镜像含 `libpam-systemd`）。
 - **常驻虚拟全键盘（fbkeyboard）**：在屏幕下半部分绘制 QWERTY 全键位键盘，通过 uinput
   注入按键，开机自启（`fbkeyboard.service` 已 enable），触摸/指针均可点击。
+  - **输入方式为「抬起释放」**（与 MIX 2S 一致）：按下只做高亮、**不发键**，手指抬起时
+    才把「抬起位置所在的键」发出去；手指按住后滑到别的键，抬起时发的是新键、不会补发
+    原来的键；滑出键盘区域抬起则什么也不发。
   - 键盘**上方**那条区域是隐藏的 3×3 导航格（无视觉提示，直接点即可）：
     上排 `Home / ↑ / 日志上翻`、中排 `← / Enter / →`、下排 `End / ↓ / 日志下翻`；
     注意正中间是 `Enter`，容易误触。
@@ -225,10 +228,20 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
     就按「历史行 + 实时内容」整屏重绘（按属性分段 `putcs`，与 `fbcon_redraw()` 同款）。
     新的控制台输出会自动落回实时画面，切 VT 也会归零；历史缓冲只在
     `fbcon_init`/`fbcon_resize` 这类可睡眠上下文里分配，滚动路径零分配。
-    内核版本 `7.1.0-rc1-sdm845 #80-postmarketos-qcom-sdm845`（pkgrel 79）。
+    内核版本 `7.1.0-rc1-sdm845 #84-postmarketos-qcom-sdm845`（pkgrel 83）。
   - 另外还有 `Esc / Tab / F10` 与 `Shift / Ctrl / Alt` 等功能键行。
   - **长按连发**：`Bcksp` 与四个方向键（`↑ ↓ ← →`）按住不放会持续生效——按住约 0.4 秒
-    后开始连发（约每 80 毫秒一次），松手即停；其余按键仍是抬手触发一次。
+    后开始连发（约每 80 毫秒一次），松手即停；连发过的键抬起时**不再补发**（否则会多出
+    一个字符）。其余按键只在抬起时触发一次。
+  - **修复「按下去不释放」**（**本次**）：基础镜像自带的 fbkeyboard 有两个缺陷会把手感
+    永久卡在「按下」状态——高亮不消失、连发键无限重复，终端里也就跟着刷出一长串重复字符：
+    1. 抬手判定要求触发抬手的 slot 恰好等于正在跟踪的 `primary_slot`，一旦上报顺序里
+       `ABS_MT_SLOT` 与 `ABS_MT_TRACKING_ID` 交错（多指或驱动上报次序变化）就会漏掉抬手；
+    2. 完全不处理 `EV_SYN/SYN_DROPPED`：主循环每轮只读一帧、重绘又要 10~25 ms，触摸密集
+       时事件在内核输入缓冲区积压溢出，`SYN_DROPPED` 之后抬手事件（`ABS_MT_TRACKING_ID=-1`）
+       被丢掉，于是永久停在按下状态。现在收到 `SYN_DROPPED` 就整体复位触点、只清高亮
+       **绝不补发按键**（否则会凭空多出字符），并且每轮把已排队的帧一次排空（上限 32 帧），
+       既消除了卡键也顺手解决了高亮/输入滞后于手指的问题。
 - **大号控制台字体**：内核内置字体 8x16 在 1080×2248 屏上字非常小；本镜像改用
   Terminus **16x32**（正好 2 倍），字符尺寸翻倍、列/行数相应减半。开机自动生效：
   - 主机制：`/etc/default/console-setup` 设为 `FONTFACE="Terminus" FONTSIZE="16x32"`，
@@ -342,8 +355,8 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
 
 | 镜像                    | 刷入分区       | 内容                                                                                                                                            | 大小                                                              |
 | --------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#83，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch` / `dipper-panel.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs（含 A630 GPU 固件）                     | 25,858,048 B                                                    |
-| `xiaomi-dipper.img`   | `userdata` | Debian 根文件系统（ext4，4096 字节块，**首启自动扩容到整块 userdata**，卷标 `dipper-root`），**Android sparse 格式**                                          | 1,762,002,072 B (≈1680 MiB / 1.64 GiB，声明覆盖 550502 个 4K 块 ≈ 2150 MiB) |
+| `boot.img`            | `boot`     | 内核 `7.1.0-rc1-sdm845`（#84，含 `dipper.patch` / `dipper-stmfts5-scan-mode.patch` / `dipper-panel.patch`）+ 追加 `sdm845-xiaomi-dipper.dtb` + initramfs（含 A630 GPU 固件）                     | 25,858,048 B                                                    |
+| `xiaomi-dipper.img`   | `userdata` | Debian 根文件系统（ext4，4096 字节块，**首启自动扩容到整块 userdata**，卷标 `dipper-root`），**Android sparse 格式**                                          | 1,762,014,360 B (≈1680 MiB / 1.64 GiB，声明覆盖 550502 个 4K 块 ≈ 2150 MiB) |
 
 > 同一份根文件系统的 raw ext4 版为
 > `/home/wxs/debian-dipper/out/xiaomi-dipper-2g.img`（2254856192 字节 ≈ 2150 MiB）。
