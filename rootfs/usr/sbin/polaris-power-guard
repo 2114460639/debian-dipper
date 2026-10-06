@@ -1,6 +1,8 @@
 #!/bin/sh
-# polaris-power-guard —— 低电量安全关机 + 充电功率控制（仅 xiaomi-polaris）
+# polaris-power-guard —— 低电量安全关机 + 充电功率控制（小米 8 / dipper）
 #
+# 文件名沿用 polaris- 前缀：本镜像的根文件系统基于 polaris rootfs 构建，
+# systemd 单元名与脚本名统一保持 polaris-*（详见 README「功能支持一览」下方说明）。
 # 背景（均为本机实测，不是推测）：
 #   1) 根文件系统在 UFS 上。电量耗尽 = 非正常断电，UFS 重新上电后 HS-G2 链路
 #      可能训练失败（hibern8 enter failed / -ENOLINK），开机直接卡死并触发

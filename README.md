@@ -35,8 +35,9 @@ Linux framebuffer 终端，屏幕底部常驻一个全尺寸虚拟键盘（fbkey
 | Modem 移动数据 4G              |  N  | `mmcli -m 0` 报 "couldn't find modem"（MPSS 未起），4G 待做                                                                                                                                                                                                                                                                               |
 | Audio 音频                   |  Y  | UCM `Dipper-HiFi`；扬声器（TAS2557，QUAT_MI2S_RX / MultiMedia3）与内置麦 **AMIC3 → MIC BIAS1** 均已验证；**本次**修复麦克风偏置路由（灵敏度恢复约 +35 dB），增益设为 ADC3 Volume 8 / DEC0 Volume 104（+28 dB）                                                                                                                                                              |
 | Swap 内存交换 zram             |  Y  | `/dev/zram0` **4 GiB** zstd，priority 100                                                                                                                                                                                                                                                                                          |
+| Power 电源守护（低电量安全关机 / 充电限流） |  Y  | **本次**新增 `polaris-power-guard.service`：低电量时主动干净关机（避免 UFS 非正常断电），插电时把 `pmi8998-charger` 的输入限流从驱动默认 **500 mA** 抬到 1.5 A；阈值见 `/etc/default/polaris-power-guard`                                                                                                                                          |
 | USB Net USB 网络             |  Y  | `usb0` UP，设备侧 172.16.42.1                                                                                                                                                                                                                                                                                                       |
-| USB OTG USB 主机 / Type-C PD |  N  | 未实测；polaris 的 OTG/PD 补丁未合入 dipper 内核                                                                                                                                                                                                                                                                                             |
+| USB OTG USB 主机 / Type-C PD |  N  | **本次**更正：内核与设备树其实**已就位**（`dr_mode="otg"` + `usb-role-switch`、PMI8998 PD PHY 与 VBUS regulator 均已编入，`/sys/class/typec/port0` 在线、`power_operation_mode=3.0A`，`usb_role` 当前为 device）；只是尚未插 OTG 外设实测 host 侧                                                                                                                                                   |
 | ADB 直连                     |  Y  | `polaris-adbd.service` 运行中，`adb devices` 显示 `dipper`                                                                                                                                                                                                                                                                             |
 | Keyboard 虚拟键盘              |  Y  | `fbkeyboard.service` 运行中                                                                                                                                                                                                                                                                                                         |
 | Keys 电源 / 音量键              |  P  | `polaris-keys.service` 运行中，但 dipper 的按键映射未逐一验证                                                                                                                                                                                                                                                                                  |
@@ -67,10 +68,12 @@ debian-dipper-flash-console/
 │   ├── etc/systemd/system/      fbkeyboard / polaris-* / qc-* 单元、睡眠 mask
 │   ├── etc/systemd/network/     usb0 固定 172.16.42.1
 │   ├── etc/NetworkManager/      WiFi MAC 固定、usb0 不交给 NM、4G 连接 Mobile4G
+│   ├── etc/default/             polaris-power-guard 阈值（低电量关机 / 充电限流）
 │   ├── etc/polkit-1/rules.d/    普通用户免密管理 NetworkManager
 │   ├── etc/issue               登录界面来源标注（Build by …/debian-dipper）
 │   ├── usr/local/sbin/polaris-modem-start  MPSS 启动脚本（dipper 覆盖层版本）
 │   ├── usr/sbin/polaris-usb-gadget         USB gadget 配置（dipper 覆盖层版本）
+│   ├── usr/sbin/polaris-power-guard        低电量安全关机 + 充电功率控制
 │   └── usr/share/alsa/ucm2/     ALSA UCM：Dipper-HiFi.conf + conf.d/sdm845/Xiaomi Mi 8.conf
 ├── scripts/
 │   ├── mk_sparse_fill.py        raw → Android sparse（RAW+FILL，无空洞）
@@ -346,15 +349,20 @@ fastboot reboot               # 若卡住/失败，再执行 fastboot continue
 - **刷完可能停在 fastboot**：本机 bootloader 偶发回落进 fastboot，此时**长按电源键
   12\~15 秒**物理复位即可（数据已写完，不会丢）；引导阶段设备把数据落盘到 UFS 可能持续几分钟。
 - **UFS 异常断电恢复**：根文件系统在 UFS 上，非正常断电（电量耗尽）可能导致 UFS 重新上电后
-  HS-G2 链路训练失败、开机卡死。镜像沿用了 polaris 的 `polaris-power-guard`
-  （低电量时主动、干净关机，避免非正常断电损伤 UFS；脚本注释标注**仅针对 polaris**），
-  该脚本在 dipper 上**未验证**。若根文件系统出现不一致，cmdline 的 `fsck.repair=yes`
-  会开机自动 `fsck -y` 修复；仍失败则按「刷机步骤」重刷（先 `erase userdata`）。
+  HS-G2 链路训练失败、开机卡死。镜像**本次已烘入** `polaris-power-guard`
+  （低电量 `<= 10%` 警告、`<= 7%` 且未充电连续 3 次确认后宽限 30 秒干净关机，
+  期间恢复充电即取消；脚本已按 dipper 改写，阈值可用 `/etc/default/polaris-power-guard` 覆盖）。
+  该守护依赖 `qcom-battery` + `pmi8998-charger` 两个 sysfs 节点（设备上已确认存在），
+  但**低电量关机路径未实机走过**（没有把电池放到 7% 去验证）。若根文件系统出现不一致，
+  cmdline 的 `fsck.repair=yes` 会开机自动 `fsck -y` 修复；仍失败则按「刷机步骤」重刷（先 `erase userdata`）。
 - **蓝牙已实测可用**：本机（dipper）蓝牙正常（`hciconfig -a` UP RUNNING、
   `bluetooth.service` 运行中）。请**不要**照抄 polaris 老笔记里「SOC 蓝牙不可用」的旧结论。
 - **本次未验证 / 待做的功能**（均**非**"可用"，请勿引用为已验证）：
   - 4G / 移动数据（N）：MPSS 未起，`mmcli` 找不到 modem，待做。
-  - USB OTG / Type-C PD（N）：polaris 的 OTG/PD 补丁未合入 dipper 内核，未实测。
+  - USB OTG / Type-C PD（N）：**不是"没做"而是"没插线测"**——内核与设备树已就位
+    （`dr_mode="otg"` + `usb-role-switch`，PMI8998 PD PHY / VBUS regulator 补丁都在 APKBUILD 里，
+    `/sys/class/typec/port0` 在线、`power_operation_mode=3.0A`）。目前只确认了 device 侧
+    （`usb_role` = device、ADB 可用），host 侧（接 U 盘 / 键盘）未实测。
   - GPU / 3D（N）：无 DRM 设备，未加载 freedreno/turnip；Mesa/Vulkan 包沿用 polaris，未验证。
   - 面板 / 背光驱动：无 DSI/DRM 面板驱动（EA8074 面板驱动待做），
     `/sys/class/backlight` 为空、无背光控制。

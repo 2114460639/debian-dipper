@@ -1,6 +1,6 @@
 [Unit]
-Description=Battery guard: low-battery safe shutdown + charge power control (polaris)
-Documentation=https://github.com/2114460639/debian-polaris
+Description=Battery guard: low-battery safe shutdown + charge power control (dipper)
+Documentation=https://github.com/2114460639/debian-dipper
 
 [Service]
 Type=simple

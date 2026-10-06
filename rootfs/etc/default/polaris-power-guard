@@ -1,4 +1,4 @@
-# polaris-power-guard 可调参数（xiao-mi MIX 2S / polaris）
+# polaris-power-guard 可调参数（小米 8 / dipper）
 # 修改后：systemctl restart polaris-power-guard
 #
 # 单位说明：电流类都是 µA（1000000 = 1 A），容量是百分比。
